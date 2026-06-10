@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<title>うちの献立帳</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #fbfaf6; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+// ===== ローカル保存アダプタ(アーティファクト版の window.storage と同じ形に揃える) =====
+const appStorage = {
+  async get(key) {
+    const v = localStorage.getItem(key);
+    if (v == null) throw new Error("key not found");
+    return { value: v };
+  },
+  async set(key, value) {
+    localStorage.setItem(key, value); // 容量超過時は例外 → 呼び出し側のcatchで処理
+    return { key };
+  },
+};
+
+
+// ===== 定数・ユーティリティ =====
+const DAYS = ["月", "火", "水", "木", "金", "土", "日"];
+const STORAGE_KEY = "kondate-app-v1";
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const round2 = (v) => Math.round(v * 100) / 100;
+const fmtQty = (q) => (q == null || isNaN(q) ? "" : String(round2(q)));
+
+// ===== カラーパレット(献立帳: 和紙×墨×深緑、朱はチェック系のみ) =====
+const P = {
+  bg: "#fbfaf6",
+  card: "#ffffff",
+  ink: "#2e2a25",
+  sub: "#8f867a",
+  line: "#e9e3d7",
+  green: "#3a7d44",
+  greenSoft: "#edf6ee",
+  shu: "#d9480f",
+  shuSoft: "#fdeee2",
+  done: "#b8b0a3",
+};
+
+const fontStack =
+  '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif';
+
+const inputBase = {
+  fontSize: 16,
+  border: `1px solid ${P.line}`,
+  borderRadius: 10,
+  padding: "9px 10px",
+  background: "#fff",
+  color: P.ink,
+  outline: "none",
+  width: "100%",
+  boxSizing: "border-box",
+  fontFamily: fontStack,
+};
+
+const btnPrimary = {
+  background: P.green,
+  color: "#fff",
+  border: "none",
+  borderRadius: 12,
+  padding: "11px 18px",
+  fontSize: 15,
+  fontWeight: 700,
+  fontFamily: fontStack,
+};
+
+const btnGhost = {
+  background: "#fff",
+  color: P.green,
+  border: `1.5px solid ${P.green}`,
+  borderRadius: 12,
+  padding: "9px 14px",
+  fontSize: 14,
+  fontWeight: 700,
+  fontFamily: fontStack,
+};
+
+const btnSmall = {
+  background: "#fff",
+  border: `1px solid ${P.line}`,
+  borderRadius: 8,
+  padding: "4px 8px",
+  fontSize: 14,
+  color: P.ink,
+  fontFamily: fontStack,
+};
+
+// ===== レシピ編集フォーム =====
+function RecipeEditor({ initial, onSave, onCancel }) {
+  const [d, setD] = useState(initial);
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const setIng = (i, k, v) =>
+    setD((p) => {
+      const ings = [...p.ingredients];
+      ings[i] = { ...ings[i], [k]: v };
+      return { ...p, ingredients: ings };
+    });
+  const addIng = () =>
+    setD((p) => ({
+      ...p,
+      ingredients: [...p.ingredients, { id: uid(), name: "", qty: "", unit: "" }],
+    }));
+  const delIng = (i) =>
+    setD((p) => ({ ...p, ingredients: p.ingredients.filter((_, j) => j !== i) }));
+
+  const canSave = d.name.trim() !== "";
+
+  return (
+    <div>
+      <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 14 }}>
+        {d.id ? "レシピを編集" : "新しいレシピ"}
+      </div>
+
+      <label style={{ fontSize: 13, color: P.sub, fontWeight: 600 }}>料理名</label>
+      <input
+        style={{ ...inputBase, marginTop: 4, marginBottom: 12 }}
+        value={d.name}
+        onChange={(e) => set("name", e.target.value)}
+        placeholder="例:肉じゃが"
+      />
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+        <div style={{ flex: 1 }}>
+          <label style={{ fontSize: 13, color: P.sub, fontWeight: 600 }}>
+            基準の人数
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              style={{ ...inputBase, textAlign: "center" }}
+              value={d.servings}
+              onChange={(e) => set("servings", e.target.value)}
+            />
+            <span style={{ fontSize: 14, color: P.sub, whiteSpace: "nowrap" }}>人分</span>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <label style={{ fontSize: 13, color: P.sub, fontWeight: 600 }}>
+            カロリー(1人分)
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              style={{ ...inputBase, textAlign: "center" }}
+              value={d.calories}
+              onChange={(e) => set("calories", e.target.value)}
+              placeholder="任意"
+            />
+            <span style={{ fontSize: 14, color: P.sub }}>kcal</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 13, color: P.sub, fontWeight: 600, marginBottom: 6 }}>
+        材料(上の人数ぶんの量で入力)
+      </div>
+      {d.ingredients.map((g, i) => (
+        <div key={g.id} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+          <input
+            style={{ ...inputBase, flex: 5 }}
+            value={g.name}
+            onChange={(e) => setIng(i, "name", e.target.value)}
+            placeholder="材料名"
+          />
+          <input
+            type="number"
+            inputMode="decimal"
+            style={{ ...inputBase, flex: 2, textAlign: "center" }}
+            value={g.qty}
+            onChange={(e) => setIng(i, "qty", e.target.value)}
+            placeholder="数"
+          />
+          <input
+            style={{ ...inputBase, flex: 2 }}
+            value={g.unit}
+            onChange={(e) => setIng(i, "unit", e.target.value)}
+            placeholder="単位"
+          />
+          <button style={{ ...btnSmall, color: P.shu }} onClick={() => delIng(i)}>
+            ×
+          </button>
+        </div>
+      ))}
+      <button style={{ ...btnGhost, width: "100%", marginTop: 4 }} onClick={addIng}>
+        ＋ 材料を追加
+      </button>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <button
+          style={{ ...btnGhost, flex: 1, color: P.sub, borderColor: P.line }}
+          onClick={onCancel}
+        >
+          キャンセル
+        </button>
+        <button
+          style={{ ...btnPrimary, flex: 2, opacity: canSave ? 1 : 0.4 }}
+          disabled={!canSave}
+          onClick={() => onSave(d)}
+        >
+          保存する
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ===== メイン =====
+function KondateApp() {
+  const [tab, setTab] = useState("recipes");
+  const [recipes, setRecipes] = useState([]);
+  const [week, setWeek] = useState({});
+  const [shopping, setShopping] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [storageOk, setStorageOk] = useState(true);
+
+  const [editing, setEditing] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [selectedDays, setSelectedDays] = useState([]);
+  const [adding, setAdding] = useState(null); // {day, recipeId, people}
+  const [manual, setManual] = useState({ name: "", qty: "", unit: "" });
+  const saveTimer = useRef(null);
+
+  // --- 読み込み ---
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await appStorage.get(STORAGE_KEY);
+        if (res && res.value) {
+          const d = JSON.parse(res.value);
+          setRecipes(Array.isArray(d.recipes) ? d.recipes : []);
+          setWeek(d.week && typeof d.week === "object" ? d.week : {});
+          setShopping(Array.isArray(d.shopping) ? d.shopping : []);
+        }
+      } catch (e) {
+        // 初回起動(キーなし)は正常
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  // --- 保存(変更から0.4秒後にまとめて) ---
+  useEffect(() => {
+    if (!loaded) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await appStorage.set(
+          STORAGE_KEY,
+          JSON.stringify({ recipes, week, shopping })
+        );
+        setStorageOk(true);
+      } catch (e) {
+        setStorageOk(false);
+      }
+    }, 400);
+    return () => clearTimeout(saveTimer.current);
+  }, [recipes, week, shopping, loaded]);
+
+  // --- レシピ操作 ---
+  const newDraft = () => ({
+    id: null,
+    name: "",
+    servings: "2",
+    calories: "",
+    ingredients: [
+      { id: uid(), name: "", qty: "", unit: "" },
+      { id: uid(), name: "", qty: "", unit: "" },
+      { id: uid(), name: "", qty: "", unit: "" },
+    ],
+  });
+
+  const toDraft = (r) => ({
+    id: r.id,
+    name: r.name,
+    servings: String(r.servings),
+    calories: r.calories == null ? "" : String(r.calories),
+    ingredients: r.ingredients.map((g) => ({
+      id: g.id,
+      name: g.name,
+      qty: g.qty == null ? "" : String(g.qty),
+      unit: g.unit,
+    })),
+  });
+
+  function saveRecipe(d) {
+    const cleaned = {
+      id: d.id || uid(),
+      name: d.name.trim(),
+      servings: Math.max(1, parseInt(d.servings, 10) || 1),
+      calories: d.calories === "" ? null : Math.max(0, parseFloat(d.calories) || 0),
+      ingredients: d.ingredients
+        .filter((g) => g.name.trim() !== "")
+        .map((g) => {
+          const n = parseFloat(g.qty);
+          return {
+            id: g.id || uid(),
+            name: g.name.trim(),
+            qty: isNaN(n) ? null : n,
+            unit: g.unit.trim(),
+          };
+        }),
+    };
+    setRecipes((prev) => {
+      const i = prev.findIndex((r) => r.id === cleaned.id);
+      if (i >= 0) {
+        const c = [...prev];
+        c[i] = cleaned;
+        return c;
+      }
+      return [...prev, cleaned];
+    });
+    setEditing(null);
+  }
+
+  function deleteRecipe(id) {
+    if (pendingDelete !== id) {
+      setPendingDelete(id);
+      setTimeout(() => setPendingDelete((p) => (p === id ? null : p)), 3000);
+      return;
+    }
+    setPendingDelete(null);
+    setRecipes((p) => p.filter((r) => r.id !== id));
+    setWeek((p) => {
+      const n = {};
+      for (const day of DAYS) n[day] = (p[day] || []).filter((e) => e.recipeId !== id);
+      return n;
+    });
+  }
+
+  // --- 献立操作 ---
+  function addEntry() {
+    if (!adding || !adding.recipeId) return;
+    const people = Math.max(1, parseInt(adding.people, 10) || 1);
+    setWeek((p) => ({
+      ...p,
+      [adding.day]: [
+        ...(p[adding.day] || []),
+        { id: uid(), recipeId: adding.recipeId, people },
+      ],
+    }));
+    setAdding(null);
+  }
+
+  function deleteEntry(day, id) {
+    setWeek((p) => ({ ...p, [day]: (p[day] || []).filter((e) => e.id !== id) }));
+  }
+
+  const toggleDay = (d) =>
+    setSelectedDays((p) => (p.includes(d) ? p.filter((x) => x !== d) : [...p, d]));
+
+  // --- 買い物メモ生成(人数比で換算 → 同名・同単位を合算) ---
+  function generateShopping() {
+    const items = [];
+    for (const day of DAYS) {
+      if (!selectedDays.includes(day)) continue;
+      for (const e of week[day] || []) {
+        const r = recipes.find((x) => x.id === e.recipeId);
+        if (!r) continue;
+        const scale = r.servings > 0 ? e.people / r.servings : 1;
+        for (const g of r.ingredients) {
+          if (!g.name) continue;
+          items.push({
+            name: g.name,
+            qty: g.qty == null ? null : round2(g.qty * scale),
+            unit: g.unit || "",
+          });
+        }
+      }
+    }
+    if (items.length === 0) return;
+    setShopping((prev) => {
+      const next = [...prev];
+      for (const it of items) {
+        const i = next.findIndex(
+          (x) => !x.checked && x.name === it.name && x.unit === it.unit
+        );
+        if (i >= 0) {
+          const cur = next[i];
+          const q =
+            cur.qty == null && it.qty == null
+              ? null
+              : round2((cur.qty || 0) + (it.qty || 0));
+          next[i] = { ...cur, qty: q };
+        } else {
+          const item = { id: uid(), ...it, checked: false };
+          const ci = next.findIndex((x) => x.checked);
+          if (ci < 0) next.push(item);
+          else next.splice(ci, 0, item);
+        }
+      }
+      return next;
+    });
+    setTab("shopping");
+  }
+
+  // --- 買い物メモ操作 ---
+  function toggleCheck(id) {
+    setShopping((prev) => {
+      const item = prev.find((x) => x.id === id);
+      if (!item) return prev;
+      const rest = prev.filter((x) => x.id !== id);
+      const t = { ...item, checked: !item.checked };
+      if (t.checked) return [...rest, t]; // チェック → 一番下へ
+      const ci = rest.findIndex((x) => x.checked);
+      if (ci < 0) return [...rest, t];
+      const copy = [...rest];
+      copy.splice(ci, 0, t); // 解除 → 未チェックの末尾へ
+      return copy;
+    });
+  }
+
+  function moveItem(id, dir) {
+    setShopping((prev) => {
+      const i = prev.findIndex((x) => x.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      if (prev[i].checked !== prev[j].checked) return prev; // グループをまたがない
+      const copy = [...prev];
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+      return copy;
+    });
+  }
+
+  const setItemQty = (id, v) => {
+    const n = parseFloat(v);
+    setShopping((p) =>
+      p.map((x) => (x.id === id ? { ...x, qty: isNaN(n) ? null : Math.max(0, n) } : x))
+    );
+  };
+  const stepQty = (id, d) =>
+    setShopping((p) =>
+      p.map((x) =>
+        x.id === id ? { ...x, qty: Math.max(0, round2((x.qty || 0) + d)) } : x
+      )
+    );
+  const deleteItem = (id) => setShopping((p) => p.filter((x) => x.id !== id));
+
+  function addManual() {
+    if (!manual.name.trim()) return;
+    const n = parseFloat(manual.qty);
+    const item = {
+      id: uid(),
+      name: manual.name.trim(),
+      qty: isNaN(n) ? null : n,
+      unit: manual.unit.trim(),
+      checked: false,
+    };
+    setShopping((prev) => {
+      const ci = prev.findIndex((x) => x.checked);
+      const copy = [...prev];
+      if (ci < 0) copy.push(item);
+      else copy.splice(ci, 0, item);
+      return copy;
+    });
+    setManual({ name: "", qty: "", unit: "" });
+  }
+
+  // --- 表示用 ---
+  const todayIdx = (new Date().getDay() + 6) % 7;
+  const unchecked = shopping.filter((x) => !x.checked);
+  const checked = shopping.filter((x) => x.checked);
+
+  if (!loaded) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: P.bg,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: P.sub,
+          fontFamily: fontStack,
+        }}
+      >
+        読み込み中…
+      </div>
+    );
+  }
+
+  // ===== タブ中身 =====
+  const recipesTab = editing ? (
+    <RecipeEditor
+      initial={editing}
+      onSave={saveRecipe}
+      onCancel={() => setEditing(null)}
+    />
+  ) : (
+    <div>
+      <button
+        style={{ ...btnPrimary, width: "100%", marginBottom: 14 }}
+        onClick={() => setEditing(newDraft())}
+      >
+        ＋ 新しいレシピを登録
+      </button>
+      {recipes.length === 0 && (
+        <div style={{ textAlign: "center", color: P.sub, fontSize: 14, padding: "40px 0" }}>
+          まだレシピがありません。
+          <br />
+          まずは1品、登録してみましょう。
+        </div>
+      )}
+      {recipes.map((r) => (
+        <div
+          key={r.id}
+          style={{
+            background: P.card,
+            border: `1px solid ${P.line}`,
+            borderRadius: 14,
+            padding: "12px 14px",
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{r.name}</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button style={btnSmall} onClick={() => setEditing(toDraft(r))}>
+                編集
+              </button>
+              <button
+                style={{
+                  ...btnSmall,
+                  color: "#fff",
+                  background: pendingDelete === r.id ? P.shu : "#fff",
+                  ...(pendingDelete === r.id
+                    ? { borderColor: P.shu }
+                    : { color: P.shu }),
+                }}
+                onClick={() => deleteRecipe(r.id)}
+              >
+                {pendingDelete === r.id ? "本当に削除?" : "削除"}
+              </button>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: P.sub, marginTop: 4 }}>
+            基準 {r.servings}人分・材料 {r.ingredients.length}品
+            {r.calories != null && ` ・ ${r.calories}kcal/人`}
+          </div>
+          {r.ingredients.length > 0 && (
+            <div style={{ fontSize: 13, color: P.sub, marginTop: 4 }}>
+              {r.ingredients
+                .map((g) => g.name + (g.qty != null ? ` ${fmtQty(g.qty)}${g.unit}` : g.unit ? ` ${g.unit}` : ""))
+                .join("、")}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const planTab = (
+    <div>
+      <div
+        style={{
+          background: P.greenSoft,
+          border: `1px solid ${P.green}33`,
+          borderRadius: 14,
+          padding: "12px 14px",
+          marginBottom: 14,
+        }}
+      >
+        <div style={{ fontSize: 13, color: P.ink, marginBottom: 8 }}>
+          買い物する日にチェック → 材料をまとめてメモへ
+        </div>
+        <button
+          style={{
+            ...btnPrimary,
+            width: "100%",
+            background: P.shu,
+            opacity: selectedDays.length > 0 ? 1 : 0.4,
+          }}
+          disabled={selectedDays.length === 0}
+          onClick={generateShopping}
+        >
+          選択した{selectedDays.length > 0 ? ` ${selectedDays.length}日分` : ""}の材料を買い物メモへ
+        </button>
+      </div>
+
+      {recipes.length === 0 && (
+        <div style={{ textAlign: "center", color: P.sub, fontSize: 14, padding: "20px 0" }}>
+          先に「レシピ」タブで料理を登録してください。
+        </div>
+      )}
+
+      {DAYS.map((day, di) => {
+        const entries = week[day] || [];
+        const kcal = entries.reduce((s, e) => {
+          const r = recipes.find((x) => x.id === e.recipeId);
+          return s + (r && r.calories != null ? r.calories : 0);
+        }, 0);
+        const isAdding = adding && adding.day === day;
+        return (
+          <div
+            key={day}
+            style={{
+              background: P.card,
+              border: `1px solid ${selectedDays.includes(day) ? P.shu : P.line}`,
+              borderRadius: 14,
+              padding: "12px 14px",
+              marginBottom: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                onClick={() => toggleDay(day)}
+                style={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: 7,
+                  border: `2px solid ${selectedDays.includes(day) ? P.shu : P.line}`,
+                  background: selectedDays.includes(day) ? P.shu : "#fff",
+                  color: "#fff",
+                  fontSize: 14,
+                  lineHeight: "20px",
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+              >
+                {selectedDays.includes(day) ? "✓" : ""}
+              </button>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>
+                {day}曜日
+                {di === todayIdx && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: P.green,
+                      background: P.greenSoft,
+                      borderRadius: 6,
+                      padding: "2px 6px",
+                      marginLeft: 8,
+                      fontWeight: 700,
+                    }}
+                  >
+                    今日
+                  </span>
+                )}
+              </div>
+              <div style={{ marginLeft: "auto", fontSize: 12, color: P.sub }}>
+                {kcal > 0 && `計 ${round2(kcal)} kcal/人`}
+              </div>
+            </div>
+
+            {entries.map((e) => {
+              const r = recipes.find((x) => x.id === e.recipeId);
+              return (
+                <div
+                  key={e.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginTop: 8,
+                    paddingTop: 8,
+                    borderTop: `1px dashed ${P.line}`,
+                  }}
+                >
+                  <div style={{ fontSize: 15, flex: 1 }}>
+                    {r ? r.name : "(削除されたレシピ)"}
+                    <span style={{ color: P.green, fontWeight: 700, marginLeft: 8 }}>
+                      {e.people}人分
+                    </span>
+                  </div>
+                  <button
+                    style={{ ...btnSmall, color: P.shu }}
+                    onClick={() => deleteEntry(day, e.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+
+            {isAdding ? (
+              <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center" }}>
+                <select
+                  style={{ ...inputBase, flex: 5 }}
+                  value={adding.recipeId}
+                  onChange={(e) => {
+                    const r = recipes.find((x) => x.id === e.target.value);
+                    setAdding({
+                      ...adding,
+                      recipeId: e.target.value,
+                      people: r ? r.servings : adding.people,
+                    });
+                  }}
+                >
+                  {recipes.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  style={{ ...inputBase, flex: 2, textAlign: "center" }}
+                  value={adding.people}
+                  onChange={(e) => setAdding({ ...adding, people: e.target.value })}
+                />
+                <span style={{ fontSize: 13, color: P.sub, whiteSpace: "nowrap" }}>人分</span>
+                <button style={{ ...btnSmall, color: P.green, fontWeight: 700 }} onClick={addEntry}>
+                  追加
+                </button>
+              </div>
+            ) : (
+              recipes.length > 0 && (
+                <button
+                  style={{ ...btnGhost, width: "100%", marginTop: 10, padding: "7px 0", fontSize: 13 }}
+                  onClick={() =>
+                    setAdding({
+                      day,
+                      recipeId: recipes[0].id,
+                      people: recipes[0].servings,
+                    })
+                  }
+                >
+                  ＋ 料理を追加
+                </button>
+              )
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const shoppingRow = (item) => (
+    <div
+      key={item.id}
+      style={{
+        background: P.card,
+        border: `1px solid ${P.line}`,
+        borderRadius: 12,
+        padding: "8px 10px",
+        marginBottom: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        opacity: item.checked ? 0.55 : 1,
+      }}
+    >
+      <button
+        onClick={() => toggleCheck(item.id)}
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: 8,
+          border: `2px solid ${item.checked ? P.green : P.line}`,
+          background: item.checked ? P.green : "#fff",
+          color: "#fff",
+          fontSize: 15,
+          lineHeight: "22px",
+          padding: 0,
+          flexShrink: 0,
+        }}
+      >
+        {item.checked ? "✓" : ""}
+      </button>
+      <div
+        style={{
+          flex: 1,
+          fontSize: 15,
+          fontWeight: 600,
+          textDecoration: item.checked ? "line-through" : "none",
+          color: item.checked ? P.done : P.ink,
+          minWidth: 0,
+          overflowWrap: "break-word",
+        }}
+      >
+        {item.name}
+      </div>
+      {!item.checked && (
+        <button style={btnSmall} onClick={() => stepQty(item.id, -1)}>
+          −
+        </button>
+      )}
+      <input
+        type="number"
+        inputMode="decimal"
+        style={{
+          ...inputBase,
+          width: 54,
+          padding: "5px 4px",
+          textAlign: "center",
+          color: item.checked ? P.done : P.ink,
+        }}
+        value={item.qty == null ? "" : item.qty}
+        onChange={(e) => setItemQty(item.id, e.target.value)}
+        disabled={item.checked}
+      />
+      {!item.checked && (
+        <button style={btnSmall} onClick={() => stepQty(item.id, 1)}>
+          ＋
+        </button>
+      )}
+      <span style={{ fontSize: 12, color: P.sub, width: 28, flexShrink: 0 }}>
+        {item.unit}
+      </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <button style={{ ...btnSmall, padding: "0px 6px", fontSize: 11 }} onClick={() => moveItem(item.id, -1)}>
+          ▲
+        </button>
+        <button style={{ ...btnSmall, padding: "0px 6px", fontSize: 11 }} onClick={() => moveItem(item.id, 1)}>
+          ▼
+        </button>
+      </div>
+      <button style={{ ...btnSmall, color: P.shu }} onClick={() => deleteItem(item.id)}>
+        ×
+      </button>
+    </div>
+  );
+
+  const shoppingTab = (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        <input
+          style={{ ...inputBase, flex: 5 }}
+          value={manual.name}
+          onChange={(e) => setManual({ ...manual, name: e.target.value })}
+          placeholder="自分で追加(例:牛乳)"
+        />
+        <input
+          type="number"
+          inputMode="decimal"
+          style={{ ...inputBase, flex: 2, textAlign: "center" }}
+          value={manual.qty}
+          onChange={(e) => setManual({ ...manual, qty: e.target.value })}
+          placeholder="数"
+        />
+        <input
+          style={{ ...inputBase, flex: 2 }}
+          value={manual.unit}
+          onChange={(e) => setManual({ ...manual, unit: e.target.value })}
+          placeholder="単位"
+        />
+        <button
+          style={{ ...btnSmall, color: P.green, fontWeight: 700, opacity: manual.name.trim() ? 1 : 0.4 }}
+          onClick={addManual}
+        >
+          追加
+        </button>
+      </div>
+
+      {shopping.length === 0 && (
+        <div style={{ textAlign: "center", color: P.sub, fontSize: 14, padding: "40px 0" }}>
+          メモは空です。
+          <br />
+          「献立」タブで日を選んで材料を取り込むか、
+          <br />
+          上の欄から直接追加できます。
+        </div>
+      )}
+
+      {unchecked.length > 0 && (
+        <div style={{ fontSize: 13, color: P.sub, fontWeight: 700, margin: "4px 0 8px" }}>
+          買うもの({unchecked.length})
+        </div>
+      )}
+      {unchecked.map(shoppingRow)}
+
+      {checked.length > 0 && (
+        <div
+          style={{
+            fontSize: 13,
+            color: P.sub,
+            fontWeight: 700,
+            margin: "16px 0 8px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>✓ 済み({checked.length})</span>
+          <button
+            style={{ ...btnSmall, color: P.shu, fontSize: 12 }}
+            onClick={() => setShopping((p) => p.filter((x) => !x.checked))}
+          >
+            済みを削除
+          </button>
+        </div>
+      )}
+      {checked.map(shoppingRow)}
+
+      {shopping.length > 0 && (
+        <button
+          style={{ ...btnGhost, width: "100%", marginTop: 12, color: P.shu, borderColor: P.shu }}
+          onClick={() => setShopping([])}
+        >
+          メモを全部消す
+        </button>
+      )}
+    </div>
+  );
+
+  // ===== レイアウト =====
+  const tabs = [
+    { key: "recipes", label: "レシピ", icon: "📖" },
+    { key: "plan", label: "献立", icon: "🗓" },
+    { key: "shopping", label: "買い物", icon: "🛒" },
+  ];
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: P.bg,
+        color: P.ink,
+        fontFamily: fontStack,
+      }}
+    >
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "18px 16px 110px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 16 }}>
+          <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: 1 }}>
+            うちの献立帳
+          </div>
+          <div style={{ fontSize: 12, color: P.sub }}>
+            {tab === "recipes" && `レシピ ${recipes.length}品`}
+            {tab === "plan" && "今週のごはん"}
+            {tab === "shopping" && unchecked.length > 0 && `残り ${unchecked.length}件`}
+          </div>
+        </div>
+
+        {!storageOk && (
+          <div
+            style={{
+              background: P.shuSoft,
+              border: `1px solid ${P.shu}55`,
+              borderRadius: 10,
+              padding: "8px 12px",
+              fontSize: 13,
+              color: P.shu,
+              marginBottom: 12,
+            }}
+          >
+            保存に失敗しました。通信状況を確認してください(入力内容は画面上には残っています)。
+          </div>
+        )}
+
+        {tab === "recipes" && recipesTab}
+        {tab === "plan" && planTab}
+        {tab === "shopping" && shoppingTab}
+      </div>
+
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "rgba(255,255,255,0.96)",
+          borderTop: `1px solid ${P.line}`,
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        <div style={{ maxWidth: 480, margin: "0 auto", display: "flex" }}>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => {
+                setTab(t.key);
+                setEditing(null);
+              }}
+              style={{
+                flex: 1,
+                background: "none",
+                border: "none",
+                padding: "10px 0 12px",
+                fontSize: 12,
+                fontWeight: 700,
+                color: tab === t.key ? P.green : P.sub,
+                fontFamily: fontStack,
+              }}
+            >
+              <div style={{ fontSize: 20, marginBottom: 2 }}>{t.icon}</div>
+              {t.label}
+              {tab === t.key && (
+                <div
+                  style={{
+                    width: 24,
+                    height: 3,
+                    borderRadius: 2,
+                    background: P.green,
+                    margin: "4px auto 0",
+                  }}
+                />
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<KondateApp />);
+</script>
+</body>
+</html>
